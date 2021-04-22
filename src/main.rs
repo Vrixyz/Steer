@@ -25,7 +25,8 @@ pub struct CommanderInput {
 
 pub struct Velocity(Vec2);
 pub struct SteeringManager {
-    pub steeringTarget: Vec2,
+    pub steering_target
+    : Vec2,
 }
 
 const MAX_SPEED: f32 = 100.0;
@@ -33,10 +34,10 @@ const MAX_SPEED: f32 = 100.0;
 /// From https://github.com/Unity-Technologies/UnityCsReference/blob/master/Runtime/Export/Math/Vector3.cs
 fn move_towards(current: Vec2, target: Vec2, maxDistanceDelta: f32) -> Vec2 {
     // avoid vector ops because current scripting backends are terrible at inlining
-    let toVector_x = target.x - current.x;
-    let toVector_y = target.y - current.y;
+    let to_vector_x = target.x - current.x;
+    let to_vector_y = target.y - current.y;
 
-    let sqdist = toVector_x * toVector_x + toVector_y * toVector_y;
+    let sqdist = to_vector_x * to_vector_x + to_vector_y * to_vector_y;
 
     if sqdist == 0.0 || (maxDistanceDelta >= 0.0 && sqdist <= maxDistanceDelta * maxDistanceDelta) {
         return target;
@@ -44,8 +45,8 @@ fn move_towards(current: Vec2, target: Vec2, maxDistanceDelta: f32) -> Vec2 {
     let dist = sqdist.sqrt();
 
     return Vec2::new(
-        current.x + toVector_x / dist * maxDistanceDelta,
-        current.y + toVector_y / dist * maxDistanceDelta,
+        current.x + to_vector_x / dist * maxDistanceDelta,
+        current.y + to_vector_y / dist * maxDistanceDelta,
     );
 }
 
@@ -104,11 +105,6 @@ fn setup(
     let mut rng = rand::thread_rng();
 
     let tile_size = Vec2::splat(64.0);
-    let map_size = Vec2::splat(320.0);
-
-    let half_x = (map_size.x / 2.0) as i32;
-    let half_y = (map_size.y / 2.0) as i32;
-
     let sprite_handle = materials.add(assets.load("branding/icon.png").into());
 
     commands
@@ -118,10 +114,6 @@ fn setup(
         .insert(Position(Transform::from_translation(Vec3::new(
             0.0, 0.0, 1000.0,
         ))));
-
-    let position = Vec2::new(0.0, 0.0);
-    let translation = (position * tile_size).extend(0.0);
-    let rotation = Quat::from_rotation_z(rng.gen::<f32>());
 
     commands
         .spawn()
@@ -133,7 +125,8 @@ fn setup(
         .insert(PlayerCommander)
         .insert(Velocity(Vec2::default()))
         .insert(SteeringManager {
-            steeringTarget: Vec2::default(),
+            steering_target
+            : Vec2::default(),
         });
 }
 
@@ -147,7 +140,8 @@ fn commander_input_apply(
     )>,
 ) {
     for (transform, mut commander, velocity, _) in steering_managers.iter_mut() {
-        commander.steeringTarget = SteeringManager::do_seek(
+        commander.steering_target
+         = SteeringManager::do_seek(
             transform.translation.into(),
             commander_input.target_pos,
             velocity.0,
@@ -158,10 +152,13 @@ fn commander_input_apply(
 fn steering_targets_influence(
     mut steering_managers: Query<(&Transform, &mut Velocity, &mut SteeringManager)>,
 ) {
-    for (transform, mut velocity, mut manager) in steering_managers.iter_mut() {
-        manager.steeringTarget = manager.steeringTarget.clamp_length_max(10.0);
+    for (_transform, mut velocity, mut manager) in steering_managers.iter_mut() {
+        manager.steering_target
+         = manager.steering_target
+        .clamp_length_max(10.0);
 
-        velocity.0 += manager.steeringTarget;
+        velocity.0 += manager.steering_target
+        ;
         velocity.0.clamp_length_max(MAX_SPEED);
     }
 }
@@ -232,7 +229,7 @@ pub fn command_debug(
 }
 
 pub fn steering_debug(
-    commander_input: Res<CommanderInput>,
+    _commander_input: Res<CommanderInput>,
     commander: Query<(&SteeringManager, &Transform, &Velocity)>,
     mut lines: ResMut<DebugLines>,
 ) {
@@ -243,13 +240,14 @@ pub fn steering_debug(
     let start = c.1.translation + c.2 .0.extend(0.0);
     lines.line_colored(
         start,
-        start + c.0.steeringTarget.extend(0.0),
+        start + c.0.steering_target
+        .extend(0.0),
         0.0,
         Color::RED,
     );
 }
 pub fn velocity_debug(
-    commander_input: Res<CommanderInput>,
+    _commander_input: Res<CommanderInput>,
     commander: Query<(&Velocity, &Transform)>,
     mut lines: ResMut<DebugLines>,
 ) {
