@@ -1,17 +1,9 @@
 use bevy::{
-    diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
-    input::mouse::MouseButtonInput,
-    math::Quat,
     prelude::*,
-    render::draw::OutsideFrustum,
-    sprite::SpriteSettings,
+    sprite::{collide_aabb::collide, SpriteSettings},
 };
 
 use bevy_prototype_debug_lines::*;
-
-use rand::Rng;
-
-const CAMERA_SPEED: f32 = 1000.0;
 
 pub struct PrintTimer(Timer);
 pub struct Position(Transform);
@@ -39,9 +31,13 @@ pub struct AttackAbility {
 
 pub struct Velocity(Vec2);
 pub struct SteeringManager {
-    pub steering_target
-    : Vec2,
+    pub steering_target: Vec2,
 }
+
+pub struct Shape {
+    pub radius: f32,
+}
+pub struct DeathOnCollide;
 
 pub struct MyAssets {
     pub bullet: Handle<ColorMaterial>,
@@ -75,7 +71,6 @@ impl SteeringManager {
 ///This example is for performance testing purposes.
 ///See https://github.com/bevyengine/bevy/pull/1492
 fn main() {
-    
     App::build()
         //.add_plugin(LogDiagnosticsPlugin::default())
         //.add_plugin(FrameTimeDiagnosticsPlugin::default())
@@ -99,7 +94,14 @@ fn main() {
         .add_system(commander_attack_apply.system())
         .add_system(steering_targets_influence.system().label("steering_update"))
         .add_system(commander_input_apply.system().before("steering_update"))
-        .add_system(velocity.system().after("steering_update"))
+        .add_system(
+            velocity
+                .system()
+                .after("steering_update")
+                .label("velocity_update"),
+        )
+        .add_system(collisions_border.system().after("velocity_update"))
+        .add_system(collisions_death.system().after("velocity_update"))
         //.add_system(move_camera.system())
         .run()
 }
@@ -109,13 +111,10 @@ fn setup(
     assets: Res<AssetServer>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let mut rng = rand::thread_rng();
-
     let tile_size = Vec2::splat(64.0);
     let sprite_handle = materials.add(assets.load("branding/icon.png").into());
 
-    commands
-    .insert_resource(MyAssets {
+    commands.insert_resource(MyAssets {
         bullet: sprite_handle.clone(),
         ally: sprite_handle.clone(),
     });
@@ -138,30 +137,23 @@ fn setup(
         .insert(PlayerCommander)
         .insert(Velocity(Vec2::default()))
         .insert(SteeringManager {
-            steering_target
-            : Vec2::default(),
+            steering_target: Vec2::default(),
         })
         .insert(AttackAbility {
-            cooldown: 1.0/2.0,
+            cooldown: 1.0 / 2.0,
             last_attack: 0.0,
         });
 }
 
 fn commander_input_apply(
     commander_input: ResMut<CommanderInput>,
-    mut steering_managers: Query<(
-        &Transform,
-        &mut SteeringManager,
-        &Velocity,
-        &PlayerCommander,
-    )>,
+    mut steering_managers: Query<(&mut SteeringManager, &Velocity, &PlayerCommander)>,
 ) {
-    for (transform, mut commander, velocity, _) in steering_managers.iter_mut() {
-        commander.steering_target
-         = SteeringManager::do_desired(
+    for (mut commander, velocity, _) in steering_managers.iter_mut() {
+        commander.steering_target = SteeringManager::do_desired(
             commander_input.desired_direction * MAX_SPEED,
             velocity.0,
-            20.0
+            20.0,
         );
     }
 }
@@ -170,10 +162,7 @@ fn commander_attack_apply(
     time: Res<Time>,
     assets: Res<MyAssets>,
     commander_input: ResMut<CommanderInput>,
-    mut attacker: Query<(
-        &Transform,
-        &mut AttackAbility,
-    )>,
+    mut attacker: Query<(&Transform, &mut AttackAbility)>,
 ) {
     for (transform, mut attack) in attacker.iter_mut() {
         if commander_input.fire_mode == FireMode::Active {
@@ -182,15 +171,20 @@ fn commander_attack_apply(
                 attack.last_attack = time_since_startup;
                 let position = transform.translation;
                 commands
-                .spawn()
-                .insert_bundle(SpriteBundle {
-                    material: assets.bullet.clone(),
-                    sprite: Sprite::new(Vec2::splat(16.0)),
-                    transform: Transform::from_translation(position),
-                    ..Default::default()
-                })
-                .insert(Velocity((commander_input.fire_target - position.into()).normalize_or_zero() * MAX_SPEED * 2.0));
-            
+                    .spawn()
+                    .insert_bundle(SpriteBundle {
+                        material: assets.bullet.clone(),
+                        sprite: Sprite::new(Vec2::splat(16.0)),
+                        transform: Transform::from_translation(position),
+                        ..Default::default()
+                    })
+                    .insert(DeathOnCollide)
+                    .insert(Shape { radius: 16. })
+                    .insert(Velocity(
+                        (commander_input.fire_target - position.into()).normalize_or_zero()
+                            * MAX_SPEED
+                            * 2.0,
+                    ));
             }
         }
     }
@@ -216,16 +210,13 @@ fn commander_attack_apply(
 }*/
 
 fn steering_targets_influence(
-    time: Res<Time>, 
+    time: Res<Time>,
     mut steering_managers: Query<(&Transform, &mut Velocity, &mut SteeringManager)>,
 ) {
     for (_transform, mut velocity, mut manager) in steering_managers.iter_mut() {
-        manager.steering_target
-         = manager.steering_target
-        .clamp_length_max(100.0);
+        manager.steering_target = manager.steering_target.clamp_length_max(100.0);
 
-        velocity.0 += manager.steering_target
-        ;
+        velocity.0 += manager.steering_target;
         velocity.0.clamp_length_max(MAX_SPEED);
     }
 }
@@ -233,6 +224,45 @@ fn steering_targets_influence(
 fn velocity(time: Res<Time>, mut vel: Query<(&mut Transform, &Velocity)>) {
     for mut v in vel.iter_mut() {
         v.0.translation += (v.1 .0 * time.delta_seconds()).extend(0.0);
+    }
+}
+fn collisions_border(mut collision_checks: Query<(&mut Transform, &Velocity)>) {
+    let bounds_x = (-300., 300.);
+    let bounds_y = (-200., 200.);
+    for (mut t, velocity) in collision_checks.iter_mut() {
+        if t.translation.x < bounds_x.0 || bounds_x.1 < t.translation.x {
+            t.translation.x = t.translation.x.clamp(bounds_x.0, bounds_x.1)
+        }
+        if t.translation.y < bounds_y.0 || bounds_y.1 < t.translation.y {
+            t.translation.y = t.translation.y.clamp(bounds_y.0, bounds_y.1)
+        }
+    }
+}
+fn collisions_death(
+    mut commands: Commands,
+    mut collision_checks: QuerySet<(
+        Query<(Entity, &Transform, &Shape), With<DeathOnCollide>>,
+        Query<(Entity, &Transform, &Shape), With<DeathOnCollide>>,
+    )>,
+) {
+    let bounds_x = (-300., 300.);
+    let bounds_y = (-200., 200.);
+    let mut firstCheck = 1;
+    for (e1, t1, s1) in collision_checks.q0().iter() {
+        for (e2, t2, s2) in collision_checks.q1().iter().skip(firstCheck) {
+            if collide(
+                t1.translation,
+                Vec2::splat(s1.radius),
+                t2.translation,
+                Vec2::splat(s1.radius),
+            )
+            .is_some()
+            {
+                commands.entity(e1).despawn();
+                commands.entity(e2).despawn();
+            }
+        }
+        firstCheck += 1;
     }
 }
 
@@ -264,24 +294,22 @@ pub fn my_input_system(
 ) {
     if mouse_button_input.pressed(MouseButton::Left) {
         commander_input.fire_mode = FireMode::Active;
-    }
-    else {
+    } else {
         commander_input.fire_mode = FireMode::Idle;
     }
-    if (keyboard_input.is_changed()) {
-
+    if keyboard_input.is_changed() {
         let mut movement = Vec2::splat(0.0);
         if keyboard_input.pressed(KeyCode::Z) {
-            movement += Vec2::unit_y();
+            movement += Vec2::Y;
         }
         if keyboard_input.pressed(KeyCode::S) {
-            movement += -Vec2::unit_y();
+            movement += -Vec2::Y;
         }
         if keyboard_input.pressed(KeyCode::D) {
-            movement += Vec2::unit_x();
+            movement += Vec2::X;
         }
         if keyboard_input.pressed(KeyCode::Q) {
-            movement += -Vec2::unit_x();
+            movement += -Vec2::X;
         }
         commander_input.desired_direction = movement.normalize_or_zero();
     }
@@ -310,7 +338,11 @@ pub fn command_debug(
         Some(it) => it,
         _ => return,
     };
-    lines.line(c.1.translation, c.1.translation + commander_input.desired_direction.extend(0.0) * MAX_SPEED, 0.0);
+    lines.line(
+        c.1.translation,
+        c.1.translation + commander_input.desired_direction.extend(0.0) * MAX_SPEED,
+        0.0,
+    );
 }
 
 pub fn steering_debug(
@@ -325,8 +357,7 @@ pub fn steering_debug(
     let start = c.1.translation + c.2 .0.extend(0.0);
     lines.line_colored(
         start,
-        start + c.0.steering_target
-        .extend(0.0),
+        start + c.0.steering_target.extend(0.0),
         0.0,
         Color::RED,
     );
